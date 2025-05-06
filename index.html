@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <title>🍓 Qulupnay kasalliklarini aniqlash</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body      { background:#f8f9fa; }
+    canvas    { max-width:100%; height:auto; border:1px solid #ced4da; border-radius:.5rem }
+    .btn-lg   { padding:.8rem 1.2rem; font-size:1.1rem }
+    @media (max-width:576px){ h1{font-size:1.5rem} }
+  </style>
+</head>
+<body>
+
+<div class="container py-4">
+  <h1 class="text-center mb-4">🍓 Qulupnay kasalliklarini aniqlash</h1>
+
+  <label class="form-label fw-semibold" for="imageInput">
+    Rasmni tanlang yoki kameradan suratga oling
+  </label>
+  <input id="imageInput" type="file"
+         accept="image/*" capture="environment"
+         class="form-control mb-3">
+
+  <div class="d-grid gap-2 mb-4">
+    <button id="detectBtn"   class="btn btn-primary btn-lg" disabled>Kasalliklarni aniqlash</button>
+    <button id="downloadBtn" class="btn btn-outline-success btn-lg" disabled>Natijani yuklab olish</button>
+  </div>
+
+  <div class="text-center mb-4">
+    <canvas id="previewCanvas"></canvas>
+  </div>
+
+  <div id="resultArea" class="d-none">
+    <h4 class="mb-3">Aniqlash natijalari</h4>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle">
+        <thead class="table-secondary">
+          <tr>
+            <th>Kasallik</th>
+            <th class="text-end">Soni</th>
+            <th class="text-end">Maksimal natija %</th>
+          </tr>
+        </thead>
+        <tbody id="resultTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<canvas id="sendCanvas" style="display:none"></canvas>
+
+<script>
+const API_KEY  = "41IxrIHUUwq2Yyfb45SK";
+const MODEL_ID = "strawberry-disease-detection-dataset/1";
+const MAX_EDGE = 640;
+
+const CLASS_MAP = {
+  "Angular Leafspot":       "Bargdagi burchakli dog‘ kasalligi",
+  "Anthracnose Fruit Rot":  "Mevalarda antraknoz chirishi",
+  "Blossom Blight":         "Gullarning qurish kasalligi",
+  "Gray Mold":              "Kulrang mogʻor (Botrytis)",
+  "Leaf Spot":              "Bargdagi dogʻlar",
+  "null":                   "Nomaʼlum / aniqlanmagan",
+  "Powdery Mildew Fruit":   "Mevalarda unshudring kasalligi",
+  "Powdery Mildew Leaf":    "Barglarda unshudring kasalligi"
+};
+
+const inputFile   = document.getElementById("imageInput");
+const detectBtn   = document.getElementById("detectBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const sendCanvas  = document.getElementById("sendCanvas");
+const previewCan  = document.getElementById("previewCanvas");
+const resultTB    = document.getElementById("resultTbody");
+const resultArea  = document.getElementById("resultArea");
+
+const sendCtx = sendCanvas.getContext("2d");
+const prevCtx = previewCan.getContext("2d");
+
+let imgOrig, scaleFactor = 1;
+
+inputFile.addEventListener("change", () => {
+  const file = inputFile.files[0];
+  if (!file) return;
+
+  imgOrig = new Image();
+  imgOrig.onload = () => {
+    previewCan.width  = imgOrig.naturalWidth;
+    previewCan.height = imgOrig.naturalHeight;
+    prevCtx.drawImage(imgOrig, 0, 0);
+
+    const { naturalWidth:w, naturalHeight:h } = imgOrig;
+    scaleFactor = Math.min(1, MAX_EDGE / Math.max(w, h));         
+    sendCanvas.width  = w * scaleFactor;
+    sendCanvas.height = h * scaleFactor;
+    sendCtx.drawImage(imgOrig, 0, 0, sendCanvas.width, sendCanvas.height);
+
+    detectBtn.disabled = false;
+    downloadBtn.disabled = true;
+    resultArea.classList.add("d-none");
+  };
+  imgOrig.src = URL.createObjectURL(file);
+});
+
+detectBtn.addEventListener("click", () => {
+  if (!imgOrig) return;
+
+  detectBtn.disabled = true;
+  detectBtn.textContent = "Aniqlanmoqda…";
+
+  sendCanvas.toBlob(async (blob) => {
+    const form = new FormData();
+    form.append("file", blob, "shrunk.jpg");
+
+    try {
+      const res  = await fetch(`https://detect.roboflow.com/${MODEL_ID}?api_key=${API_KEY}`,
+                               { method:"POST", body:form });
+      const data = await res.json();
+      annotate(data.predictions || []);
+    } catch (err) {
+      alert("❌ Aniqlash amalga oshmadi: " + err);
+    } finally {
+      detectBtn.disabled = false;
+      detectBtn.textContent = "Kasalliklarni aniqlash";
+    }
+  }, "image/jpeg");
+});
+
+function annotate(preds){
+  prevCtx.drawImage(imgOrig, 0, 0);
+  prevCtx.lineWidth = 3;
+  prevCtx.font = "20px Arial";
+  prevCtx.textBaseline = "top";
+
+  const agg = {};
+
+  preds.forEach(p => {
+    const r = 1/scaleFactor;
+    const x = p.x*r, y = p.y*r, w = p.width*r, h = p.height*r;
+    const left = x-w/2, top = y-h/2;
+
+
+    prevCtx.strokeStyle = "blue";
+    prevCtx.strokeRect(left, top, w, h);
+
+
+    const uz = CLASS_MAP[p.class] || p.class;
+    const label = `${uz} (${(p.confidence*100).toFixed(1)} %)`;
+    const pad=4, textW = prevCtx.measureText(label).width+pad*2, textH = 24;
+    prevCtx.fillStyle = "rgba(0,0,255,.18)";
+    prevCtx.fillRect(left, top-textH, textW, textH);
+    prevCtx.fillStyle = "blue";
+    prevCtx.fillText(label, left+pad, top-textH+pad/2);
+
+
+    if(!agg[uz]) agg[uz]={cnt:0,max:0};
+    agg[uz].cnt++;
+    agg[uz].max=Math.max(agg[uz].max,p.confidence);
+  });
+
+
+  resultTB.innerHTML="";
+  const classes = Object.keys(agg);
+  if(classes.length===0){
+    resultTB.innerHTML = `<tr><td colspan="3" class="text-center">Hech qanday kasallik aniqlanmadi</td></tr>`;
+  }else{
+    classes.forEach(k=>{
+      const {cnt,max}=agg[k];
+      resultTB.insertAdjacentHTML("beforeend",
+        `<tr>
+           <td>${k}</td>
+           <td class="text-end">${cnt}</td>
+           <td class="text-end">${(max*100).toFixed(1)}</td>
+         </tr>`);
+    });
+  }
+  resultArea.classList.remove("d-none");
+  downloadBtn.disabled = false;
+}
+
+downloadBtn.addEventListener("click", () => {
+  previewCan.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"),{href:url,download:"natija.jpg"});
+    a.click(); URL.revokeObjectURL(url);
+  }, "image/jpeg");
+});
+</script>
+</body>
+</html>
